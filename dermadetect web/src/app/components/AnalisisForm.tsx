@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import DiagnosticResults from './DiagnosticResults'; // Ajusta la ruta según tu estructura de carpetas
 
+
 interface Diagnostico {
   localizacion: string;
   observacion: string;
@@ -22,6 +23,7 @@ const AnalisisForm = () => {
   const [image, setImage] = useState(null);
   const [diagnostico, setDiagnostico] = useState<Diagnostico | null>(null);
   const [preview, setPreview] = useState(null);
+  const baseUrl = process.env.NEXT_PUBLIC_API_URL;
   const [adjustments, setAdjustments] = useState({
     zoom: 100,
     brightness: 100,
@@ -77,70 +79,111 @@ const AnalisisForm = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    // Validación de campos
-    let missingFields = [];
-    Object.keys(formData).forEach((key) => {
-      if (!formData[key]) {
-        missingFields.push(key);
-      }
-    });
-    if (!image) missingFields.push('image');
-
-    if (missingFields.length > 0) {
-      setErrorMessage(`Faltan campos por llenar: ${missingFields.join(', ')}`);
-      return;
-    } else {
-      setErrorMessage('');
-    }
-
-    const formDataToSend = new FormData();
-    formDataToSend.append('file', image);
-    
-    // Asegurarse que los tipos de datos coincidan con el backend
-    formDataToSend.append('age', parseInt(formData.age));
-    formDataToSend.append('sex', formData.sex);
-    formDataToSend.append('localization', formData.localization);
-    formDataToSend.append('name', formData.name);
-    formDataToSend.append('identification', formData.identification);
-    formDataToSend.append('observacion', formData.observacion);
-
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL;
-      const response = await fetch(`${baseUrl}/predict`, {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-        },
-        body: formDataToSend
-      });
+        // Validar campos del formulario
+        const missingFields = Object.entries(formData)
+            .filter(([key, value]) => !value)
+            .map(([key]) => key);
+        
+        if (!image) missingFields.push('image');
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => null);
-        throw new Error(
-          errorData?.detail || 
-          `Error ${response.status}: ${response.statusText}`
-        );
-      }
+        if (missingFields.length > 0) {
+            setErrorMessage(`Faltan campos por llenar: ${missingFields.join(', ')}`);
+            return;
+        }
+        
+        setErrorMessage('');
+        
+        const baseUrl = process.env.NEXT_PUBLIC_API_URL;
+        if (!baseUrl) {
+            throw new Error('La URL de la API no está configurada');
+        }
 
-      const result = await response.json();
-      setPrediction(result);
-      
-      // Actualizar el estado del diagnóstico con la respuesta
-      setDiagnostico({
-        localizacion: formData.localization,
-        tipo_cancer: result.prediction, // Asumiendo que la API devuelve una predicción
-        observacion: formData.observacion,
-        fecha_diagnostico: new Date().toISOString(),
-        probabilidades: result.probabilities || {} // Asumiendo que la API devuelve probabilidades
-      });
-      
-      setSuccessMessage('Análisis enviado con éxito.');
+        // Crear FormData con validación de datos
+        const formDataToSend = new FormData();
+        formDataToSend.append('file', image);
+        formDataToSend.append('age', Number(formData.age) || 0);
+        formDataToSend.append('sex', formData.sex || '');
+        formDataToSend.append('localization', formData.localization || '');
+        formDataToSend.append('name', formData.name || '');
+        formDataToSend.append('identification', formData.identification || '');
+        formDataToSend.append('observacion', formData.observacion || '');
+
+        const predictUrl = `${baseUrl}/predict`;
+
+        let response = await fetch(predictUrl, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+            },
+            body: formDataToSend
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Error ${response.status}: ${errorText}`);
+        }
+
+        const predictResult = await response.json();
+
+        // Verificar que tenemos la información necesaria
+        const storageInfo = predictResult.storage_info || {};
+        const imagenRuta = predictResult.imagen.ruta_imagen; // Ruta de la imagen de la respuesta
+
+        if (!imagenRuta) {
+            console.error('Falta la ruta de la imagen en la respuesta:', predictResult);
+            throw new Error('No se recibió la ruta de la imagen del servidor');
+        }
+
+        const pdfPayload = {
+            result: {
+                paciente: predictResult.paciente,
+                diagnostico: predictResult.diagnostico,
+                imagen: {
+                    ...predictResult.imagen,
+                    ruta_imagen: imagenRuta // Usar la ruta de la imagen
+                },
+                predicted_class: predictResult.predicted_class,
+                probabilities: predictResult.probabilities
+            },
+            patient_dir: storageInfo.patient_dir || '',
+            diagnosis_date: storageInfo.diagnosis_date || '',
+            original_image_path: imagenRuta // Pasar la ruta de la imagen
+        };
+
+        let pdfResponse = await fetch(`${baseUrl}/generate-pdf`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/pdf'
+            },
+            body: JSON.stringify(pdfPayload)
+        });
+
+        if (!pdfResponse.ok) {
+            const errorText = await pdfResponse.text();
+            throw new Error(`Error ${pdfResponse.status}: ${errorText}`);
+        }
+
+        const pdfBlob = await pdfResponse.blob();
+        const pdfUrl = URL.createObjectURL(pdfBlob);
+        const link = document.createElement('a');
+        link.href = pdfUrl;
+        link.download = `Reporte_Diagnostico_${formData.identification}_${new Date().toISOString().split('T')[0]}.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(pdfUrl);
+
+        setSuccessMessage('Reporte PDF generado y descargado exitosamente.');
+        
     } catch (error) {
-      console.error('Error detallado:', error);
-      setErrorMessage(`Error al enviar el análisis: ${error.message}`);
+        console.error('Error completo:', error);
+        setErrorMessage(error.message || 'Error desconocido en la aplicación');
     }
-  };
-  
+};
+
+
   const handleInputChange = (e) => {
     const { name, value } = e.target;
 
@@ -250,11 +293,11 @@ const AnalisisForm = () => {
                   onChange={handleInputChange}
                 />
 
-                <Label htmlFor="identification">Identificación</Label>
+                <Label htmlFor="identification">DNI</Label>
                 <Input
                   id="identification"
                   name="identification"
-                  placeholder="Número de identificación"
+                  placeholder="DNI"
                   value={formData.identification}
                   onChange={handleInputChange}
                 />
