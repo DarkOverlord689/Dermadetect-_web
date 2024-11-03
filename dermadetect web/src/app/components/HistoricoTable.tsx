@@ -30,17 +30,27 @@ interface Prediction {
   predicted_class: string;
 }
 
+interface PDFFile {
+  patient_id: string;
+  filename: string;
+  timestamp: string;
+  path: string;
+}
+
 const HistoricoTable = () => {
   const [predictions, setPredictions] = useState<Prediction[]>([]);
+  const [pdfFiles, setPdfFiles] = useState<PDFFile[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const baseUrl = process.env.NEXT_PUBLIC_API_URL;
 
-  console.log(baseUrl); 
   useEffect(() => {
-    fetchPredictions();
+    Promise.all([
+      fetchPredictions(),
+      
+    ]);
   }, []);
 
   const fetchPredictions = async () => {
@@ -50,7 +60,6 @@ const HistoricoTable = () => {
         throw new Error('Error al cargar los datos');
       }
       const data = await response.json();
-      console.log(data); // Verifica la estructura de los datos
       setPredictions(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error desconocido');
@@ -58,38 +67,76 @@ const HistoricoTable = () => {
       setIsLoading(false);
     }
   };
-  
+
+
 
   const handleDownloadPDF = async (patientId: string) => {
+    setIsLoading(true);
+    setError(null);
+    console.log('Patient ID a buscar:', patientId);
+
     try {
-      const response = await fetch(`${baseUrl}/pdfs/${patientId}`);
-      if (!response.ok) {
-        throw new Error('Error al descargar el PDF');
-      }
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `reporte_${patientId}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+        // Obtener la lista de PDFs
+        const response = await fetch(`${baseUrl}/pdfs`);
+        if (!response.ok) {
+            throw new Error('Error al cargar la lista de PDFs');
+        }
+        const pdfFiles: PDFFile[] = await response.json();
+        console.log('Datos recibidos de la API:', pdfFiles);
+
+        const patientPDFs = pdfFiles.filter(pdf => {
+          if (!pdf) {
+              console.log('Elemento indefinido encontrado');
+              return false;
+          }
+          const patientIdString = String(patientId).trim();
+          const pdfPatientIdString = String(pdf.patient_id).trim();
+          const isMatch = pdfPatientIdString === patientIdString;
+          console.log(`Comparando patientId: "${patientIdString}" con pdf.patient_id: "${pdfPatientIdString}", Coincide: ${isMatch}`);
+          return isMatch;
+      });
+      
+      
+      console.log('PDFs filtrados:', patientPDFs);
+      
+
+        if (patientPDFs.length === 0) {
+            throw new Error('No hay PDFs disponibles para este paciente');
+        }
+
+        // Seleccionar el PDF más reciente
+        const mostRecentPDF = patientPDFs.sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
+
+        // Descargar el PDF
+        const pdfResponse = await fetch(`${baseUrl}/pdfs/${mostRecentPDF.patient_id}/${mostRecentPDF.timestamp}/${mostRecentPDF.filename}`);
+        if (!pdfResponse.ok) {
+            throw new Error('Error al descargar el PDF');
+        }
+
+        // Descargar y abrir el PDF
+        const blob = await pdfResponse.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = mostRecentPDF.filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al descargar el PDF');
+        setError(err instanceof Error ? err.message : 'Error al descargar el PDF');
+    } finally {
+        setIsLoading(false);
     }
-  };
+};
+
 
   const filteredPredictions = searchQuery
-  ? predictions.filter(prediction => {
-      const numeroIdentificacion = prediction.paciente.numero_identificacion;
-      return (String(numeroIdentificacion) || '').toLowerCase().includes(searchQuery.toLowerCase());
-    })
-  : predictions;
-
-
-
-  
+    ? predictions.filter(prediction => {
+        const numeroIdentificacion = prediction.paciente.numero_identificacion;
+        return (String(numeroIdentificacion) || '').toLowerCase().includes(searchQuery.toLowerCase());
+      })
+    : predictions;
 
   if (isLoading) {
     return <div className="text-center p-4">Cargando...</div>;
@@ -133,30 +180,36 @@ const HistoricoTable = () => {
               </tr>
             </thead>
             <tbody>
-              {filteredPredictions.map((prediction, index) => (
-                <tr key={index} className="border-b hover:bg-muted/50">
-                  <td className="p-2">{prediction.paciente.fecha_registro}</td>
-                  <td className="p-2">{prediction.paciente.nombre}</td>
-                  <td className="p-2">{prediction.paciente.numero_identificacion}</td>
-                  <td className="p-2">{prediction.paciente.edad}</td>
-                  <td className="p-2">{prediction.paciente.sexo}</td>
-                  <td className="p-2">{prediction.diagnostico.localizacion}</td>
-                  <td className="p-2">{prediction.diagnostico.tipo_cancer}</td>
-                  <td className="p-2">{prediction.imagen?.ruta_imagen || 'No disponible'}</td>
-                  <td className="p-2">{JSON.stringify(prediction.probabilities)}</td>
-                  <td className="p-2">{prediction.predicted_class}</td>
-                  <td className="p-2">{prediction.diagnostico.observacion}</td>
-                  <td className="p-2">
+              {filteredPredictions.map((prediction, index) => {
+                const patientPDFs = pdfFiles.filter(
+                  pdf => pdf.patient_id === prediction.paciente.numero_identificacion
+                );
+                return (
+                  <tr key={index} className="border-b hover:bg-muted/50">
+                    <td className="p-2">{prediction.paciente.fecha_registro}</td>
+                    <td className="p-2">{prediction.paciente.nombre}</td>
+                    <td className="p-2">{prediction.paciente.numero_identificacion}</td>
+                    <td className="p-2">{prediction.paciente.edad}</td>
+                    <td className="p-2">{prediction.paciente.sexo}</td>
+                    <td className="p-2">{prediction.diagnostico.localizacion}</td>
+                    <td className="p-2">{prediction.diagnostico.tipo_cancer}</td>
+                    <td className="p-2">{prediction.imagen?.ruta_imagen || 'No disponible'}</td>
+                    <td className="p-2">{JSON.stringify(prediction.probabilities)}</td>
+                    <td className="p-2">{prediction.predicted_class}</td>
+                    <td className="p-2">{prediction.diagnostico.observacion}</td>
+                    <td className="p-2">
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => handleDownloadPDF(prediction.paciente.numero_identificacion)}
+                     
                     >
                       Descargar PDF
                     </Button>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
