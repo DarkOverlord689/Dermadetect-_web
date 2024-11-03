@@ -125,7 +125,7 @@ const AnalisisForm = () => {
         }
 
         const predictResult = await response.json();
-
+        setDiagnostico(predictResult.diagnostico);
         // Verificar que tenemos la información necesaria
         const storageInfo = predictResult.storage_info || {};
         const imagenRuta = predictResult.imagen.ruta_imagen; // Ruta de la imagen de la respuesta
